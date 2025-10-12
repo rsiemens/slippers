@@ -13,6 +13,7 @@ python = "^3.11"
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.18.2"
 ruff = "^0.14.0"
+pudb = "^2025.1.1"
 
 [tool.ruff.lint]
 select = ["PL", "I"]
