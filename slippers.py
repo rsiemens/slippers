@@ -302,6 +302,7 @@ def close(
     if len(selector.get_map()):
         for obj, key in selector.get_map().items():
             logger.warning(f"Leaking {obj} {key.data}")
+            key.data.close()
 
     selector.close()
     sys.exit()
