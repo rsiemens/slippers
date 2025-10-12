@@ -1,10 +1,14 @@
 [tool.poetry]
-name = "slippers"
+name = "slippers-proxy"
 version = "0.1.0"
 description = ""
 authors = ["Ryan Siemens <ryanjsiemens@gmail.com>"]
 license = "MIT"
 readme = "README.md"
+packages = [
+    { include = "slippers.py" },
+]
+
 
 [tool.poetry.dependencies]
 python = "^3.11"
