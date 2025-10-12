@@ -1,21 +1,20 @@
 import argparse
-import multiprocessing
-import sys
-import struct
-from functools import partial
-import signal
 import enum
 import logging
+import multiprocessing
+import signal
+import socket
+import struct
+import sys
+from functools import partial
 from selectors import (
-    DefaultSelector,
     EVENT_READ,
     EVENT_WRITE,
     BaseSelector,
+    DefaultSelector,
 )
-import socket
-from urllib.parse import urlparse
 from typing import Any
-
+from urllib.parse import urlparse
 
 __all__ = ["proxy"]
 __version__ = "0.1.0"
@@ -23,6 +22,7 @@ __version__ = "0.1.0"
 logger = logging.getLogger(__name__)
 
 VERSION = 0x05  # SOCKS5
+N_PACKET_HEADERS = 2
 
 
 class Methods(enum.Enum):
@@ -89,7 +89,7 @@ class ServerSession(BaseSession):
 
     def read(self) -> None:
         conn, addr = self.conn.accept()
-        logger.info(f"{addr[0]} connected")
+        logger.info(f"{addr[0]}:{addr[1]} connected")
         conn.setblocking(False)
         self.selector.register(
             conn,
@@ -139,6 +139,7 @@ class ClientSession(BaseSession):
         hostname = self.proxy.hostname or ""
         port = self.proxy.port or 80
         client.connect((hostname, port))
+        client.setblocking(False)
         logger.info(f"{hostname}:{port} connected")
 
         proxy_session = ProxySession(
@@ -153,7 +154,7 @@ class ClientSession(BaseSession):
 
     def stage_method_selection(self) -> None:
         size = len(self.in_buff)
-        if size < 2:
+        if size < N_PACKET_HEADERS:
             return
 
         ver, nmethods = self.in_buff[:2]
@@ -221,7 +222,7 @@ class ProxySession(BaseSession):
 
     def stage_auth(self) -> None:
         size = len(self.in_buff)
-        if size < 2:
+        if size < N_PACKET_HEADERS:
             return
 
         ver, method = self.in_buff[:2]
@@ -246,7 +247,7 @@ class ProxySession(BaseSession):
 
     def stage_verify(self) -> None:
         size = len(self.in_buff)
-        if size < 2:
+        if size < N_PACKET_HEADERS:
             return
 
         ver, status = self.in_buff[:2]
