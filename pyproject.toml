@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "slippers"
+version = "0.1.0"
+description = ""
+authors = ["Ryan Siemens <ryanjsiemens@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.18.2"
+ruff = "^0.14.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
