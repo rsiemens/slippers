@@ -1,4 +1,8 @@
+import argparse
+import sys
 import struct
+from functools import partial
+import signal
 import enum
 import logging
 from selectors import (
@@ -9,6 +13,7 @@ from selectors import (
 )
 import socket
 from urllib.parse import urlparse
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +28,7 @@ class Methods(enum.Enum):
     NOT_ACCEPTABLE = 0xFF
 
 
-def create_server(host: str = "127.0.0.1", port: int = 1080) -> socket.socket:
+def create_server(host: str, port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setblocking(False)
@@ -33,8 +38,11 @@ def create_server(host: str = "127.0.0.1", port: int = 1080) -> socket.socket:
 
 
 class BaseSession:
-    def __init__(self, conn: socket.socket, selector: BaseSelector):
+    def __init__(
+        self, conn: socket.socket, addr: tuple[str, int], selector: BaseSelector
+    ):
         self.conn = conn
+        self.addr = f"{addr[0]}:{addr[1]}"
         self.selector = selector
         self.closed = False
 
@@ -60,15 +68,19 @@ class BaseSession:
             self.conn.close()
             self.closed = True
 
+    def __repr__(self):
+        return f"<{self.__class__.__name__} {self.addr=} {self.closed=}>"
+
 
 class ServerSession(BaseSession):
     def __init__(
         self,
         conn: socket.socket,
+        addr: tuple[str, int],
         selector: BaseSelector,
         proxy: str,
     ):
-        super().__init__(conn, selector)
+        super().__init__(conn, addr, selector)
         self.proxy = proxy
 
     def read(self) -> None:
@@ -78,7 +90,7 @@ class ServerSession(BaseSession):
         self.selector.register(
             conn,
             EVENT_READ | EVENT_WRITE,
-            ClientSession(conn, self.selector, addr, self.proxy),
+            ClientSession(conn, addr, self.selector, self.proxy),
         )
 
 
@@ -86,12 +98,11 @@ class ClientSession(BaseSession):
     def __init__(
         self,
         conn: socket.socket,
-        selector: BaseSelector,
         addr: tuple[str, int],
+        selector: BaseSelector,
         proxy: str,
     ):
-        super().__init__(conn, selector)
-        self.host, self.port = addr
+        super().__init__(conn, addr, selector)
         self.in_buff = b""
         self.out_buff = b""
         self.stage = self.stage_method_selection
@@ -102,13 +113,13 @@ class ClientSession(BaseSession):
         data = self.conn.recv(1024)
 
         if not data:
-            logger.info(f"{self.host} disconnected")
+            logger.info(f"{self.addr} disconnected")
             self.close()
             if self.upstream:
                 self.upstream.close(shutdown=True)
             return
 
-        logger.debug(f"{self.host}:> {data!r}")
+        logger.debug(f"{self.addr} > {data!r}")
         self.in_buff += data
         self.stage()
 
@@ -116,7 +127,7 @@ class ClientSession(BaseSession):
         if self.out_buff:
             written = self.conn.send(self.out_buff)
             data = self.out_buff[:written]
-            logger.debug(f"{self.host}:< {data!r}")
+            logger.debug(f"{self.addr} < {data!r}")
             self.out_buff = self.out_buff[written:]
 
     def connect_proxy(self) -> None:
@@ -124,10 +135,12 @@ class ClientSession(BaseSession):
         hostname = self.proxy.hostname or ""
         port = self.proxy.port or 80
         client.connect((hostname, port))
+        logger.info(f"{hostname}:{port} connected")
+
         proxy_session = ProxySession(
             client,
-            self.selector,
             (hostname, port),
+            self.selector,
             self.proxy.username or "",
             self.proxy.password or "",
             self,
@@ -166,14 +179,13 @@ class ProxySession(BaseSession):
     def __init__(
         self,
         conn: socket.socket,
-        selector: BaseSelector,
         addr: tuple[str, int],
+        selector: BaseSelector,
         username: str,
         password: str,
         downstream: ClientSession,
     ):
-        super().__init__(conn, selector)
-        self.host, self.port = addr
+        super().__init__(conn, addr, selector)
         self.username = username
         self.password = password
         self.in_buff = b""
@@ -187,12 +199,12 @@ class ProxySession(BaseSession):
         data = self.conn.recv(1024)
 
         if not data:
-            logger.info(f"upstream {self.host} disconnected")
+            logger.info(f"upstream {self.addr} disconnected")
             self.close()
             self.downstream.close(shutdown=True)
             return
 
-        logger.debug(f"upstream {self.host}:> {data!r}")
+        logger.debug(f"upstream {self.addr} > {data!r}")
         self.in_buff += data
         self.stage()
 
@@ -200,7 +212,7 @@ class ProxySession(BaseSession):
         if self.out_buff:
             written = self.conn.send(self.out_buff)
             data = self.out_buff[:written]
-            logger.debug(f"upstream {self.host}:< {data!r}")
+            logger.debug(f"upstream {self.addr} < {data!r}")
             self.out_buff = self.out_buff[written:]
 
     def stage_auth(self) -> None:
@@ -237,14 +249,15 @@ class ProxySession(BaseSession):
         self.in_buff = self.in_buff[2:]
 
         if status != 0x00:
-            logger.debug(
-                f"upstream {self.host} failed to verify username/password ({status=})"
+            logger.warning(
+                f"upstream {self.addr} failed to verify username/password ({status=})"
             )
             self.close()
             self.downstream.close(shutdown=True)
             return
 
         self.stage = self.stage_tunnel
+        logger.info(f"Tunnel between {self.downstream.addr} -> {self.addr} established")
         # important - this signals that the downstream can start tunneling to the upstream
         self.downstream.upstream = self
         self.downstream.stage()
@@ -255,45 +268,84 @@ class ProxySession(BaseSession):
             self.in_buff = b""
 
 
-if __name__ == "__main__":
-    import os
-    import sys
-
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-        stream=sys.stdout,
-    )
-
-    HOST = "127.0.0.1"
-    PORT = 1080
+def run(host: str, port: int, proxy: str) -> None:
     selector = DefaultSelector()
-    sock = create_server(HOST, PORT)
-    logger.info(f"Listening on {HOST}:{PORT}")
-    server_session = ServerSession(
-        sock,
-        selector,
-        f"socks5://{os.getenv('VPN_USERNAME')}:{os.getenv('VPN_PASSWORD')}@new-york.us.socks.nordhold.net:1080",
-    )
+    sock = create_server(host, port)
+    logger.info(f"Listening on {host}:{port}")
+    server_session = ServerSession(sock, (host, port), selector, proxy)
     selector.register(
         sock,
         EVENT_READ,
         server_session,
     )
 
-    while True:
-        try:
-            for key, events in selector.select(timeout=0.5):
-                session = key.data
-                session.handle_events(events)
-        except KeyboardInterrupt:
-            break
+    sig_handler = partial(close, selector, server_session)
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
 
+    while True:
+        for key, events in selector.select(timeout=0.5):
+            session = key.data
+            session.handle_events(events)
+
+
+def close(
+    selector: BaseSelector, server_session: ServerSession, signum: int, frame: Any
+) -> None:
+    logger.info("Shutting down")
     server_session.close()
-    leaks = len(selector.get_map())
-    if leaks:
+
+    if len(selector.get_map()):
         for obj, key in selector.get_map().items():
-            logger.debug(f"Leaking {obj} {key}")
+            logger.warning(f"Leaking {obj} {key.data}")
 
     selector.close()
+    sys.exit()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--host",
+        action="store",
+        type=str,
+        required=False,
+        default="localhost",
+    )
+    parser.add_argument(
+        "--port",
+        action="store",
+        type=int,
+        required=False,
+        default=1080,
+    )
+    parser.add_argument(
+        "--log-level",
+        action="store",
+        type=str,
+        required=False,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+    )
+    parser.add_argument(
+        "upstream",
+        action="store",
+        type=str,
+        help='The upstream SOCKS5 server. Should be formatted like "socks5://username:password@host:port".',
+    )
+    return parser.parse_args()
+
+
+def main(args) -> None:
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+    )
+
+    run(args.host, args.port, args.upstream)
+
+
+if __name__ == "__main__":
+    main(parse_args())
