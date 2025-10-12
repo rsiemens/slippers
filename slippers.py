@@ -168,6 +168,7 @@ class ClientSession(BaseSession):
                 self.out_buff += struct.pack(
                     ">BB", VERSION, Methods.NOT_ACCEPTABLE.value
                 )
+                self.close(shutdown=True)
             else:
                 self.out_buff += struct.pack(">BB", VERSION, Methods.NO_AUTH.value)
                 if self.proxy:
@@ -262,7 +263,7 @@ class ProxySession(BaseSession):
             return
 
         self.stage = self.stage_tunnel
-        logger.info(f"Tunnel between {self.downstream.addr} -> {self.addr} established")
+        logger.info(f"Tunnel from {self.downstream.addr} to {self.addr} established")
         # important - this signals that the downstream can start tunneling to the upstream
         self.downstream.upstream = self
         self.downstream.stage()
@@ -315,6 +316,7 @@ class proxy:
         self.host = host
         self.port = port
         self.proc: multiprocessing.Process | None = None
+        self.uri = f"socks5://{host}:{port}"
 
     def start(self) -> None:
         self.proc = multiprocessing.Process(
@@ -322,14 +324,17 @@ class proxy:
         )
         self.proc.start()
 
-    def __enter__(self) -> str:
-        self.start()
-        return f"socks5://{self.host}:{self.port}"
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def stop(self) -> None:
         if self.proc is not None and self.proc.is_alive():
             self.proc.terminate()
             self.proc.join()
+
+    def __enter__(self) -> str:
+        self.start()
+        return self.uri
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.stop()
 
 
 def parse_args() -> argparse.Namespace:

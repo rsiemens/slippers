@@ -1,11 +1,14 @@
 import socket
 import unittest
 from selectors import EVENT_READ, EVENT_WRITE, BaseSelector, DefaultSelector
+from typing import cast
 from unittest.mock import ANY, MagicMock, patch
 
-from slippers import BaseSession, ClientSession, ServerSession
+from slippers import BaseSession, ClientSession, ProxySession, ServerSession
 
-NO_AUTH_METH_SELECT_PACKET = b"\x05\x01\x00"
+METH_SELECT_REQ = b"\x05\x01\x00"
+METH_SELECT_RES = b"\x05\x00"
+METH_SELECT_RES_NOT_ACCEPTABLE = b"\x05\xff"
 
 
 class BaseTestCase(unittest.TestCase):
@@ -87,9 +90,12 @@ class ServerSessionTestCase(BaseTestCase):
             proxy="socks5://foo:bar@my-socks-server.net:1080",
         )
 
-    def test_read(self):
+    def test_read(self) -> None:
         mock_client = MagicMock(spec=socket.socket)
-        self.session.conn.accept.return_value = (mock_client, ("127.0.0.1", 4321))
+        cast(MagicMock, self.session.conn.accept).return_value = (
+            mock_client,
+            ("127.0.0.1", 4321),
+        )
 
         with self.assertLogs("slippers", level="INFO") as log_ctx:
             self.session.read()
@@ -112,16 +118,16 @@ class ClientSessionTestCase(BaseTestCase):
             proxy="socks5://foo:bar@my-socks-server.net:1080",
         )
 
-    def test_read(self):
-        self.mock_conn.recv.return_value = NO_AUTH_METH_SELECT_PACKET
+    def test_read(self) -> None:
+        self.mock_conn.recv.return_value = METH_SELECT_REQ
         with patch.object(self.session, "stage") as mock_stage:
             self.session.read()
 
-        self.assertEqual(self.session.in_buff, NO_AUTH_METH_SELECT_PACKET)
+        self.assertEqual(self.session.in_buff, METH_SELECT_REQ)
         mock_stage.assert_called_once()
         self.assertFalse(self.session.closed)
 
-    def test_read_no_data(self):
+    def test_read_no_data(self) -> None:
         self.mock_conn.recv.return_value = b""
         with (
             patch.object(self.session, "stage") as mock_stage,
@@ -134,5 +140,60 @@ class ClientSessionTestCase(BaseTestCase):
         mock_stage.assert_not_called()
         self.assertTrue(self.session.closed)
 
-    def test_write(self):
-        pass
+    def test_write(self) -> None:
+        self.session.write()
+        self.mock_conn.send.assert_not_called()
+
+        self.session.out_buff = METH_SELECT_RES
+        self.mock_conn.send.return_value = len(METH_SELECT_RES)
+        self.session.write()
+        written = self.mock_conn.send.call_args.args[0]
+        self.assertEqual(written, METH_SELECT_RES)
+        self.assertEqual(self.session.out_buff, b"")
+
+    @patch("slippers.socket.socket")
+    def test_connect_proxy(self, mock_socket):
+        mock_conn = MagicMock()
+        mock_socket.return_value = mock_conn
+
+        self.session.connect_proxy()
+        mock_conn.connect.assert_called_once_with(("my-socks-server.net", 1080))
+        self.mock_selector.register.called_once_with(
+            mock_conn, EVENT_READ | EVENT_WRITE, ANY
+        )
+        proxy_session = self.mock_selector.register.call_args.args[2]
+        self.assertIsInstance(proxy_session, ProxySession)
+
+    def test_stage_method_selection(self) -> None:
+        # NOOP without at least two bytes
+        self.session.stage_method_selection()
+        self.assertEqual(self.session.out_buff, b"")
+
+        # Enough packets to check VERSION and NMETHODS fields, but not enough
+        # to get the methods
+        self.session.in_buff = METH_SELECT_REQ[:2]
+        self.session.stage_method_selection()
+        self.assertEqual(self.session.in_buff, METH_SELECT_REQ[:2])
+        self.assertEqual(self.session.out_buff, b"")
+
+        self.session.in_buff = METH_SELECT_REQ
+        with patch.object(self.session, "connect_proxy") as mock_connect_proxy:
+            self.session.stage_method_selection()
+        self.assertEqual(self.session.in_buff, b"")
+        self.assertEqual(self.session.out_buff, METH_SELECT_RES)
+        self.assertEqual(self.session.stage, self.session.stage_tunnel)
+        mock_connect_proxy.assert_called_once()
+
+    def test_stage_method_selection_invalid(self) -> None:
+        # Invalid version
+        self.session.in_buff = b"\x04\x01\x00"
+        self.session.stage_method_selection()
+        self.assertTrue(self.session.closed)
+
+    def test_stage_method_selection_unsupported_methods(self) -> None:
+        # Only NO_AUTH (0x00) is supported for the local server
+        self.session.in_buff = b"\x05\x02\x01\x02"
+        self.session.stage_method_selection()
+        self.assertEqual(self.session.in_buff, b"")
+        self.assertEqual(self.session.out_buff, METH_SELECT_RES_NOT_ACCEPTABLE)
+        self.assertTrue(self.session.closed)
