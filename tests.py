@@ -9,6 +9,8 @@ from slippers import BaseSession, ClientSession, ProxySession, ServerSession
 METH_SELECT_REQ = b"\x05\x01\x00"
 METH_SELECT_RES = b"\x05\x00"
 METH_SELECT_RES_NOT_ACCEPTABLE = b"\x05\xff"
+METH_SELECT_AUTH_REQ = b"\x05\x01\x02"
+METH_SELECT_AUTH_RES = b"\x05\x02"
 
 
 class BaseTestCase(unittest.TestCase):
@@ -163,6 +165,9 @@ class ClientSessionTestCase(BaseTestCase):
         )
         proxy_session = self.mock_selector.register.call_args.args[2]
         self.assertIsInstance(proxy_session, ProxySession)
+        self.assertEqual(proxy_session.username, "foo")
+        self.assertEqual(proxy_session.password, "bar")
+        self.assertEqual(proxy_session.downstream, self.session)
 
     def test_stage_method_selection(self) -> None:
         # NOOP without at least two bytes
@@ -197,3 +202,84 @@ class ClientSessionTestCase(BaseTestCase):
         self.assertEqual(self.session.in_buff, b"")
         self.assertEqual(self.session.out_buff, METH_SELECT_RES_NOT_ACCEPTABLE)
         self.assertTrue(self.session.closed)
+
+    def test_stage_tunnel(self) -> None:
+        self.session.upstream = MagicMock(spec=ProxySession, out_buff=b"")
+        self.session.stage_tunnel()
+        self.assertEqual(self.session.in_buff, b"")
+        self.assertEqual(self.session.upstream.out_buff, b"")
+
+        self.session.in_buff = b"arbitrary data"
+        self.session.stage_tunnel()
+        self.assertEqual(self.session.in_buff, b"")
+        self.assertEqual(self.session.upstream.out_buff, b"arbitrary data")
+
+
+class ProxySessionTestCase(BaseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.session = ProxySession(
+            conn=self.mock_conn,
+            addr=("my-socks-server.net", 1080),
+            selector=self.mock_selector,
+            username="foo",
+            password="bar",
+            downstream=MagicMock(spec=ClientSession),
+        )
+
+    def test_read(self) -> None:
+        self.mock_conn.recv.return_value = METH_SELECT_RES
+        with patch.object(self.session, "stage") as mock_stage:
+            self.session.read()
+
+        self.assertEqual(self.session.in_buff, METH_SELECT_RES)
+        mock_stage.assert_called_once()
+        self.assertFalse(self.session.closed)
+
+    def test_read_no_data(self) -> None:
+        self.mock_conn.recv.return_value = b""
+        with (
+            patch.object(self.session, "stage") as mock_stage,
+            self.assertLogs("slippers", level="INFO") as log_ctx,
+        ):
+            self.session.read()
+
+        self.assertEqual(
+            log_ctx.records[0].msg, "upstream my-socks-server.net:1080 disconnected"
+        )
+        self.assertEqual(self.session.in_buff, b"")
+        mock_stage.assert_not_called()
+        self.assertTrue(self.session.closed)
+        cast(MagicMock, self.session.downstream.close).assert_called_once_with(
+            shutdown=True
+        )
+
+    def test_write(self) -> None:
+        self.assertEqual(self.session.out_buff, METH_SELECT_AUTH_REQ)
+        self.mock_conn.send.return_value = len(METH_SELECT_AUTH_REQ)
+        self.session.write()
+        self.mock_conn.send.asssert_called_once_with(METH_SELECT_AUTH_REQ)
+        self.assertEqual(self.session.out_buff, b"")
+
+        self.mock_conn.send.reset_mock()
+        self.session.write()
+        self.mock_conn.send.assert_not_called()
+
+    def test_stage_auth(self) -> None:
+        # Needs two bytes
+        self.session.out_buff = b""
+        self.session.stage_auth()
+        self.assertEqual(self.session.out_buff, b"")
+
+        self.session.in_buff = METH_SELECT_AUTH_RES
+        self.session.stage_auth()
+        self.assertEqual(self.session.in_buff, b"")
+        self.assertEqual(self.session.out_buff, b"\x01\x03foo\x03bar")
+        self.assertEqual(self.session.stage, self.session.stage_verify)
+
+    def test_stage_auth_invalid(self) -> None:
+        # non user/pass auth selection
+        self.session.in_buff = b"\x05\x01"
+        self.session.stage_auth()
+        self.assertTrue(self.session.closed)
+        cast(MagicMock, self.session.downstream.close).called_once_with(shutdown=True)

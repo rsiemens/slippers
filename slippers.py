@@ -16,7 +16,7 @@ from selectors import (
 from typing import Any
 from urllib.parse import urlparse
 
-__all__ = ["proxy"]
+__all__ = ("proxy",)
 __version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
