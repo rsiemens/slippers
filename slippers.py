@@ -1,4 +1,5 @@
 import argparse
+import multiprocessing
 import sys
 import struct
 from functools import partial
@@ -15,6 +16,9 @@ import socket
 from urllib.parse import urlparse
 from typing import Any
 
+
+__all__ = ["proxy"]
+__version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +305,29 @@ def close(
 
     selector.close()
     sys.exit()
+
+
+class proxy:
+    def __init__(self, proxy: str, host: str = "localhost", port: int = 1080):
+        self.proxy = proxy
+        self.host = host
+        self.port = port
+        self.proc: multiprocessing.Process | None = None
+
+    def start(self) -> None:
+        self.proc = multiprocessing.Process(
+            target=run, args=(self.host, self.port, self.proxy), name="slippers-server"
+        )
+        self.proc.start()
+
+    def __enter__(self) -> str:
+        self.start()
+        return f"socks5://{self.host}:{self.port}"
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.proc is not None and self.proc.is_alive():
+            self.proc.terminate()
+            self.proc.join()
 
 
 def parse_args() -> argparse.Namespace:
