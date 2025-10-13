@@ -47,7 +47,7 @@ password = os.getenv("SOCKS_PASSWORD")
 def main():
     with (
         sync_playwright() as p,
-        slippers.proxy(
+        slippers.Proxy(
             f"socks5://{username}:{password}@my-socks-server.net:1080"
         ) as socks_host,
     ):

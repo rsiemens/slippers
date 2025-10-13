@@ -65,7 +65,7 @@ class BaseSessionTestCase(BaseTestCase):
         self.mock_conn.recv.return_value = b""
         with (
             patch.object(self.session, "stage") as mock_stage,
-            self.assertLogs("slippers", level="INFO") as log_ctx,
+            self.assertLogs("slippers", level="DEBUG") as log_ctx,
         ):
             self.session.read()
 
@@ -124,7 +124,7 @@ class ServerSessionTestCase(BaseTestCase):
             ("127.0.0.1", 4321),
         )
 
-        with self.assertLogs("slippers", level="INFO") as log_ctx:
+        with self.assertLogs("slippers", level="DEBUG") as log_ctx:
             self.session.read()
 
         self.assertEqual(log_ctx.records[0].msg, "127.0.0.1:4321 (10) connected")
@@ -294,11 +294,8 @@ class UtilityTestCase(BaseTestCase):
                 client_session.conn, EVENT_READ | EVENT_WRITE, client_session
             )
 
-            with self.assertLogs("slippers", level="WARNING") as log_ctx:
-                close(selector, server_session, signal.SIGTERM, MagicMock())
+            close(selector, server_session, signal.SIGTERM, MagicMock())
 
-            self.assertEqual(len(log_ctx.records), 2)
-            self.assertIn("Leaking", log_ctx.records[0].msg)
             self.assertIsNone(selector.get_map())
             self.assertTrue(server_session.closed)
             self.assertTrue(client_session.closed)

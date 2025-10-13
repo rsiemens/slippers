@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 __all__ = ("proxy",)
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -69,19 +69,18 @@ class BaseSession:
 
         try:
             data = self.conn.recv(1024)
-        except (OSError, ConnectionError):
-            logger.exception(
-                f"Error occurred while receiving data from {self.addr} ({self.fd})"
+        except (OSError, ConnectionError) as e:
+            logger.error(
+                f"{e} occurred while receiving data from {self.addr} ({self.fd})"
             )
             self.close()
             return
 
         if not data:
-            logger.info(f"{self.addr} ({self.fd}) disconnected")
+            logger.debug(f"{self.addr} ({self.fd}) disconnected")
             self.close()
             return
 
-        logger.debug(f"{self.addr} ({self.fd}) > {data!r}")
         self.in_buff += data
         self.stage()
 
@@ -92,15 +91,14 @@ class BaseSession:
         if self.out_buff:
             try:
                 written = self.conn.send(self.out_buff)
-            except (OSError, ConnectionError):
-                logger.exception(
-                    f"Error occurred while sending data to {self.addr} ({self.fd})"
+            except (OSError, ConnectionError) as e:
+                logger.error(
+                    f"{e} occurred while sending data to {self.addr} ({self.fd})"
                 )
                 self.close()
                 return
 
             data = self.out_buff[:written]
-            logger.debug(f"{self.addr} ({self.fd}) < {data!r}")
             self.out_buff = self.out_buff[written:]
 
     def close(self) -> None:
@@ -109,6 +107,7 @@ class BaseSession:
         while to_close is not None and to_close.upstream is not None:
             to_close = to_close.upstream
 
+        closed_log = []
         while to_close is not None:
             if not to_close.closed:
                 self.selector.unregister(to_close.conn)
@@ -120,9 +119,13 @@ class BaseSession:
                     pass
                 to_close.conn.close()
                 to_close.closed = True
-                logger.info(f"{to_close.addr} ({to_close.fd}) closed")
+                closed_log.append(f"{to_close.addr} ({to_close.fd})")
 
             to_close = to_close.downstream
+
+        if closed_log:
+            addrs = " to ".join(reversed(closed_log))
+            logger.info(f"Tunnel from {addrs} closed")
 
     def __repr__(self):
         return f"<{self.__class__.__name__} addr={self.addr} closed={self.closed}>"
@@ -144,7 +147,7 @@ class ServerSession(BaseSession):
             return
 
         conn, addr = self.conn.accept()
-        logger.info(f"{addr[0]}:{addr[1]} ({conn.fileno()}) connected")
+        logger.debug(f"{addr[0]}:{addr[1]} ({conn.fileno()}) connected")
         conn.setblocking(False)
         self.selector.register(
             conn,
@@ -172,7 +175,7 @@ class ClientSession(BaseSession):
         port = self.proxy.port or 80
         client.connect((hostname, port))
         client.setblocking(False)
-        logger.info(f"{hostname}:{port} ({client.fileno()}) connected")
+        logger.debug(f"{hostname}:{port} ({client.fileno()}) connected")
 
         proxy_session = ProxySession(
             client,
@@ -324,7 +327,6 @@ def close(
     to_close = []
     if len(selector.get_map()):
         for obj, key in selector.get_map().items():
-            logger.warning(f"Leaking {obj} {key.data}")
             to_close.append(key.data)
 
     for session in to_close:
