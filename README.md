@@ -64,3 +64,25 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+## API
+
+**`class slippers.Proxy(proxy: str, host: str = "localhost", port: int = 1080)`**
+
+Create a handler for a local, unauthenticated SOCKS5 server which forwards traffic to an upstream authenticated SOCKS5 proxy.
+
+&nbsp;&nbsp;**`start() -> None`**
+
+&nbsp;&nbsp;Start the local proxy in a background process. Once started it can start accepting connections.
+
+&nbsp;&nbsp;**`stop() -> None`**
+
+&nbsp;&nbsp;Stop the background proxy process (if running).
+
+&nbsp;&nbsp;**`__enter__() -> str`**
+
+&nbsp;&nbsp;Start the proxy and return the local SOCSK5 uri.
+
+&nbsp;&nbsp;**`__exit__(exc_type, exc_value, traceback) -> None`**
+
+&nbsp;&nbsp;Stop the proxy when exiting the `with` block.
