@@ -19,6 +19,7 @@ class BaseTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_selector = MagicMock(spec=DefaultSelector)
         self.mock_conn = MagicMock(spec=socket.socket)
+        self.mock_conn.fileno.return_value = 9
 
 
 class BaseSessionTestCase(BaseTestCase):
@@ -31,15 +32,17 @@ class BaseSessionTestCase(BaseTestCase):
             self.w_count = 0
 
         def read(self) -> None:
+            super().read()
             self.r_count += 1
 
         def write(self) -> None:
+            super().write()
             self.w_count += 1
 
     def setUp(self) -> None:
         super().setUp()
         self.session = self.MySession(
-            conn=self.mock_conn, addr=("127.0.0.1", 1080), selector=self.mock_selector
+            conn=self.mock_conn, addr=("127.0.0.1", 4321), selector=self.mock_selector
         )
 
     def test_handle_events(self) -> None:
@@ -48,79 +51,6 @@ class BaseSessionTestCase(BaseTestCase):
         self.session.handle_events(EVENT_READ | EVENT_WRITE)
         self.assertEqual(self.session.r_count, 2)
         self.assertEqual(self.session.w_count, 2)
-
-    def test_close(self) -> None:
-        self.session.close()
-
-        self.assertTrue(self.session.closed)
-        self.mock_selector.unregister.assert_called_once_with(self.mock_conn)
-        self.mock_conn.shutdown.assert_not_called()
-        self.mock_conn.close.assert_called_once()
-
-        self.session.close()
-        # Closing a session a second time is idempotent
-        self.assertTrue(self.session.closed)
-        self.assertEqual(self.mock_selector.unregister.call_count, 1)
-        self.assertEqual(self.mock_conn.shutdown.call_count, 0)
-        self.assertEqual(self.mock_conn.close.call_count, 1)
-
-    def test_close_with_shutdown(self) -> None:
-        self.session.close(shutdown=True)
-
-        self.assertTrue(self.session.closed)
-        self.mock_selector.unregister.assert_called_once_with(self.mock_conn)
-        self.mock_conn.shutdown.assert_called_once()
-        self.mock_conn.close.assert_called_once()
-
-        self.session.close(shutdown=True)
-        self.assertTrue(self.session.closed)
-        self.assertEqual(self.mock_selector.unregister.call_count, 1)
-        self.assertEqual(self.mock_conn.shutdown.call_count, 1)
-        self.assertEqual(self.mock_conn.close.call_count, 1)
-
-    def test_repr(self) -> None:
-        self.assertEqual(
-            repr(self.session), "<MySession addr=127.0.0.1:1080 closed=False>"
-        )
-
-
-class ServerSessionTestCase(BaseTestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.session = ServerSession(
-            conn=self.mock_conn,
-            addr=("127.0.0.1", 1080),
-            selector=self.mock_selector,
-            proxy="socks5://foo:bar@my-socks-server.net:1080",
-        )
-
-    def test_read(self) -> None:
-        mock_client = MagicMock(spec=socket.socket)
-        cast(MagicMock, self.session.conn.accept).return_value = (
-            mock_client,
-            ("127.0.0.1", 4321),
-        )
-
-        with self.assertLogs("slippers", level="INFO") as log_ctx:
-            self.session.read()
-
-        self.assertEqual(log_ctx.records[0].msg, "127.0.0.1:4321 connected")
-        self.mock_selector.register.assert_called_once_with(
-            mock_client, EVENT_READ | EVENT_WRITE, ANY
-        )
-        client_session = self.mock_selector.register.call_args.args[2]
-        self.assertIsInstance(client_session, ClientSession)
-
-
-class ClientSessionTestCase(BaseTestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.session = ClientSession(
-            conn=self.mock_conn,
-            addr=("127.0.0.1", 4321),
-            selector=self.mock_selector,
-            proxy="socks5://foo:bar@my-socks-server.net:1080",
-        )
 
     def test_read(self) -> None:
         self.mock_conn.recv.return_value = METH_SELECT_REQ
@@ -139,7 +69,7 @@ class ClientSessionTestCase(BaseTestCase):
         ):
             self.session.read()
 
-        self.assertEqual(log_ctx.records[0].msg, "127.0.0.1:4321 disconnected")
+        self.assertEqual(log_ctx.records[0].msg, "127.0.0.1:4321 (9) disconnected")
         self.assertEqual(self.session.in_buff, b"")
         mock_stage.assert_not_called()
         self.assertTrue(self.session.closed)
@@ -154,6 +84,66 @@ class ClientSessionTestCase(BaseTestCase):
         written = self.mock_conn.send.call_args.args[0]
         self.assertEqual(written, METH_SELECT_RES)
         self.assertEqual(self.session.out_buff, b"")
+
+    def test_close(self) -> None:
+        self.session.close()
+
+        self.assertTrue(self.session.closed)
+        self.mock_selector.unregister.assert_called_once_with(self.mock_conn)
+        self.mock_conn.shutdown.assert_called_once()
+        self.mock_conn.close.assert_called_once()
+
+        self.session.close()
+        # Closing a session a second time is idempotent
+        self.assertTrue(self.session.closed)
+        self.assertEqual(self.mock_selector.unregister.call_count, 1)
+        self.assertEqual(self.mock_conn.shutdown.call_count, 1)
+        self.assertEqual(self.mock_conn.close.call_count, 1)
+
+    def test_repr(self) -> None:
+        self.assertEqual(
+            repr(self.session), "<MySession addr=127.0.0.1:4321 closed=False>"
+        )
+
+
+class ServerSessionTestCase(BaseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.session = ServerSession(
+            conn=self.mock_conn,
+            addr=("127.0.0.1", 1080),
+            selector=self.mock_selector,
+            proxy="socks5://foo:bar@my-socks-server.net:1080",
+        )
+
+    def test_read(self) -> None:
+        mock_client = MagicMock(spec=socket.socket)
+        mock_client.fileno.return_value = 10
+        cast(MagicMock, self.session.conn.accept).return_value = (
+            mock_client,
+            ("127.0.0.1", 4321),
+        )
+
+        with self.assertLogs("slippers", level="INFO") as log_ctx:
+            self.session.read()
+
+        self.assertEqual(log_ctx.records[0].msg, "127.0.0.1:4321 (10) connected")
+        self.mock_selector.register.assert_called_once_with(
+            mock_client, EVENT_READ | EVENT_WRITE, ANY
+        )
+        client_session = self.mock_selector.register.call_args.args[2]
+        self.assertIsInstance(client_session, ClientSession)
+
+
+class ClientSessionTestCase(BaseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.session = ClientSession(
+            conn=self.mock_conn,
+            addr=("127.0.0.1", 4321),
+            selector=self.mock_selector,
+            proxy="socks5://foo:bar@my-socks-server.net:1080",
+        )
 
     @patch("slippers.socket.socket")
     def test_connect_proxy(self, mock_socket):
@@ -220,52 +210,36 @@ class ClientSessionTestCase(BaseTestCase):
 class ProxySessionTestCase(BaseTestCase):
     def setUp(self) -> None:
         super().setUp()
+        downstream = MagicMock(
+            spec=ClientSession,
+            addr=("127.0.0.1", 4321),
+            conn=MagicMock(),
+            fd=10,
+            closed=False,
+            downstream=None,
+        )
         self.session = ProxySession(
             conn=self.mock_conn,
             addr=("my-socks-server.net", 1080),
             selector=self.mock_selector,
             username="foo",
             password="bar",
-            downstream=MagicMock(spec=ClientSession),
+            downstream=downstream,
+        )
+        downstream.upstream = self.session
+
+    def test_write_while_downstream_closed(self) -> None:
+        self.session.downstream.closed = True
+        self.session.out_buff = b"hello world"
+        cast(MagicMock, self.session.conn.send).return_value = len(
+            self.session.out_buff
         )
 
-    def test_read(self) -> None:
-        self.mock_conn.recv.return_value = METH_SELECT_RES
-        with patch.object(self.session, "stage") as mock_stage:
-            self.session.read()
-
-        self.assertEqual(self.session.in_buff, METH_SELECT_RES)
-        mock_stage.assert_called_once()
-        self.assertFalse(self.session.closed)
-
-    def test_read_no_data(self) -> None:
-        self.mock_conn.recv.return_value = b""
-        with (
-            patch.object(self.session, "stage") as mock_stage,
-            self.assertLogs("slippers", level="INFO") as log_ctx,
-        ):
-            self.session.read()
-
-        self.assertEqual(
-            log_ctx.records[0].msg, "upstream my-socks-server.net:1080 disconnected"
-        )
-        self.assertEqual(self.session.in_buff, b"")
-        mock_stage.assert_not_called()
-        self.assertTrue(self.session.closed)
-        cast(MagicMock, self.session.downstream.close).assert_called_once_with(
-            shutdown=True
-        )
-
-    def test_write(self) -> None:
-        self.assertEqual(self.session.out_buff, METH_SELECT_AUTH_REQ)
-        self.mock_conn.send.return_value = len(METH_SELECT_AUTH_REQ)
+        # flushes out anything in the out_buff then closes
         self.session.write()
-        self.mock_conn.send.asssert_called_once_with(METH_SELECT_AUTH_REQ)
+        self.mock_conn.send.asssert_called_once_with(b"hello world")
         self.assertEqual(self.session.out_buff, b"")
-
-        self.mock_conn.send.reset_mock()
-        self.session.write()
-        self.mock_conn.send.assert_not_called()
+        self.assertTrue(self.session.closed)
 
     def test_stage_auth(self) -> None:
         # Needs two bytes
@@ -284,7 +258,7 @@ class ProxySessionTestCase(BaseTestCase):
         self.session.in_buff = b"\x05\x01"
         self.session.stage_auth()
         self.assertTrue(self.session.closed)
-        cast(MagicMock, self.session.downstream.close).called_once_with(shutdown=True)
+        self.assertTrue(self.session.downstream.closed)
 
 
 class UtilityTestCase(BaseTestCase):
@@ -294,6 +268,9 @@ class UtilityTestCase(BaseTestCase):
 
         # just need a file descriptor w/ a fileno
         with tempfile.TemporaryFile() as conn1, tempfile.TemporaryFile() as conn2:
+            conn1.shutdown = lambda flag: None  # type: ignore
+            conn2.shutdown = lambda flag: None  # type: ignore
+
             server_session = ServerSession(
                 conn=conn1,  # type: ignore
                 addr=("127.0.0.1", 1080),

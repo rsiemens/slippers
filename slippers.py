@@ -13,7 +13,7 @@ from selectors import (
     BaseSelector,
     DefaultSelector,
 )
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 __all__ = ("proxy",)
@@ -46,9 +46,15 @@ class BaseSession:
         self, conn: socket.socket, addr: tuple[str, int], selector: BaseSelector
     ):
         self.conn = conn
+        self.fd = conn.fileno()
         self.addr = f"{addr[0]}:{addr[1]}"
         self.selector = selector
         self.closed = False
+        self.in_buff = b""
+        self.out_buff = b""
+        self.upstream: BaseSession | None = None
+        self.downstream: BaseSession | None = None
+        self.stage: Callable[[], None] = lambda: None
 
     def handle_events(self, events: int) -> None:
         if events & EVENT_READ:
@@ -58,19 +64,65 @@ class BaseSession:
             self.write()
 
     def read(self) -> None:
-        raise NotImplementedError
+        if self.closed:
+            return
+
+        try:
+            data = self.conn.recv(1024)
+        except (OSError, ConnectionError):
+            logger.exception(
+                f"Error occurred while receiving data from {self.addr} ({self.fd})"
+            )
+            self.close()
+            return
+
+        if not data:
+            logger.info(f"{self.addr} ({self.fd}) disconnected")
+            self.close()
+            return
+
+        logger.debug(f"{self.addr} ({self.fd}) > {data!r}")
+        self.in_buff += data
+        self.stage()
 
     def write(self) -> None:
-        raise NotImplementedError
+        if self.closed:
+            return
 
-    def close(self, shutdown: bool = False) -> None:
-        if not self.closed:
-            self.selector.unregister(self.conn)
+        if self.out_buff:
+            try:
+                written = self.conn.send(self.out_buff)
+            except (OSError, ConnectionError):
+                logger.exception(
+                    f"Error occurred while sending data to {self.addr} ({self.fd})"
+                )
+                self.close()
+                return
 
-            if shutdown:
-                self.conn.shutdown(socket.SHUT_RDWR)
-            self.conn.close()
-            self.closed = True
+            data = self.out_buff[:written]
+            logger.debug(f"{self.addr} ({self.fd}) < {data!r}")
+            self.out_buff = self.out_buff[written:]
+
+    def close(self) -> None:
+        to_close: BaseSession | None = self
+        # Start at the upstream and move down. Essentially LIFO order.
+        while to_close is not None and to_close.upstream is not None:
+            to_close = to_close.upstream
+
+        while to_close is not None:
+            if not to_close.closed:
+                self.selector.unregister(to_close.conn)
+
+                try:
+                    to_close.conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    # peer closed their end already
+                    pass
+                to_close.conn.close()
+                to_close.closed = True
+                logger.info(f"{to_close.addr} ({to_close.fd}) closed")
+
+            to_close = to_close.downstream
 
     def __repr__(self):
         return f"<{self.__class__.__name__} addr={self.addr} closed={self.closed}>"
@@ -88,8 +140,11 @@ class ServerSession(BaseSession):
         self.proxy = proxy
 
     def read(self) -> None:
+        if self.closed:
+            return
+
         conn, addr = self.conn.accept()
-        logger.info(f"{addr[0]}:{addr[1]} connected")
+        logger.info(f"{addr[0]}:{addr[1]} ({conn.fileno()}) connected")
         conn.setblocking(False)
         self.selector.register(
             conn,
@@ -107,32 +162,9 @@ class ClientSession(BaseSession):
         proxy: str,
     ):
         super().__init__(conn, addr, selector)
-        self.in_buff = b""
-        self.out_buff = b""
         self.stage = self.stage_method_selection
         self.upstream: ProxySession | None = None
         self.proxy = urlparse(proxy)
-
-    def read(self) -> None:
-        data = self.conn.recv(1024)
-
-        if not data:
-            logger.info(f"{self.addr} disconnected")
-            self.close()
-            if self.upstream:
-                self.upstream.close(shutdown=True)
-            return
-
-        logger.debug(f"{self.addr} > {data!r}")
-        self.in_buff += data
-        self.stage()
-
-    def write(self) -> None:
-        if self.out_buff:
-            written = self.conn.send(self.out_buff)
-            data = self.out_buff[:written]
-            logger.debug(f"{self.addr} < {data!r}")
-            self.out_buff = self.out_buff[written:]
 
     def connect_proxy(self) -> None:
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -140,7 +172,7 @@ class ClientSession(BaseSession):
         port = self.proxy.port or 80
         client.connect((hostname, port))
         client.setblocking(False)
-        logger.info(f"{hostname}:{port} connected")
+        logger.info(f"{hostname}:{port} ({client.fileno()}) connected")
 
         proxy_session = ProxySession(
             client,
@@ -160,7 +192,7 @@ class ClientSession(BaseSession):
         ver, nmethods = self.in_buff[:2]
         total_size = 2 + nmethods
         if ver != VERSION or nmethods < 1:
-            self.close(shutdown=True)
+            self.close()
         elif size >= total_size:
             method_options = struct.unpack(f">{nmethods}B", self.in_buff[2:total_size])
             self.in_buff = self.in_buff[total_size:]
@@ -168,7 +200,7 @@ class ClientSession(BaseSession):
                 self.out_buff += struct.pack(
                     ">BB", VERSION, Methods.NOT_ACCEPTABLE.value
                 )
-                self.close(shutdown=True)
+                self.close()
             else:
                 self.out_buff += struct.pack(">BB", VERSION, Methods.NO_AUTH.value)
                 if self.proxy:
@@ -194,32 +226,20 @@ class ProxySession(BaseSession):
         super().__init__(conn, addr, selector)
         self.username = username
         self.password = password
-        self.in_buff = b""
         self.out_buff = struct.pack(
             ">BBB", VERSION, 0x01, Methods.USERNAME_PASSWORD.value
         )
         self.stage = self.stage_auth
-        self.downstream = downstream
-
-    def read(self) -> None:
-        data = self.conn.recv(1024)
-
-        if not data:
-            logger.info(f"upstream {self.addr} disconnected")
-            self.close()
-            self.downstream.close(shutdown=True)
-            return
-
-        logger.debug(f"upstream {self.addr} > {data!r}")
-        self.in_buff += data
-        self.stage()
+        self.downstream: ClientSession = downstream
 
     def write(self) -> None:
-        if self.out_buff:
-            written = self.conn.send(self.out_buff)
-            data = self.out_buff[:written]
-            logger.debug(f"upstream {self.addr} < {data!r}")
-            self.out_buff = self.out_buff[written:]
+        super().write()
+        # A oneshot request might comethrough to the downstream and then the
+        # client immediately closes before the upstream connected and forwarded
+        # the payload. This makes sure we flush out the outgoing buffer and then
+        # close the connection.
+        if not self.out_buff and self.downstream.closed:
+            self.close()
 
     def stage_auth(self) -> None:
         size = len(self.in_buff)
@@ -231,7 +251,6 @@ class ProxySession(BaseSession):
 
         if ver != VERSION or method != Methods.USERNAME_PASSWORD.value:
             self.close()
-            self.downstream.close(shutdown=True)
             return
 
         user_size = len(self.username)
@@ -256,14 +275,15 @@ class ProxySession(BaseSession):
 
         if status != 0x00:
             logger.warning(
-                f"upstream {self.addr} failed to verify username/password ({status=})"
+                f"upstream {self.addr} ({self.fd}) failed to verify username/password ({status=})"
             )
             self.close()
-            self.downstream.close(shutdown=True)
             return
 
         self.stage = self.stage_tunnel
-        logger.info(f"Tunnel from {self.downstream.addr} to {self.addr} established")
+        logger.info(
+            f"Tunnel from {self.downstream.addr} ({self.downstream.fd}) to {self.addr} ({self.fd}) established"
+        )
         # important - this signals that the downstream can start tunneling to the upstream
         self.downstream.upstream = self
         self.downstream.stage()
@@ -277,7 +297,7 @@ class ProxySession(BaseSession):
 def run(host: str, port: int, proxy: str) -> None:
     selector = DefaultSelector()
     sock = create_server(host, port)
-    logger.info(f"Listening on {host}:{port}")
+    logger.info(f"Listening on {host}:{port} ({sock.fileno()})")
     server_session = ServerSession(sock, (host, port), selector, proxy)
     selector.register(
         sock,
@@ -314,7 +334,7 @@ def close(
     sys.exit()
 
 
-class proxy:
+class Proxy:
     def __init__(self, proxy: str, host: str = "localhost", port: int = 1080):
         self.proxy = proxy
         self.host = host
