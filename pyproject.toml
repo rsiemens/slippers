@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "slippers-proxy"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
 authors = ["Ryan Siemens <ryanjsiemens@gmail.com>"]
 license = "MIT"
@@ -8,6 +8,9 @@ readme = "README.md"
 packages = [
     { include = "slippers.py" },
 ]
+
+[projects.urls]
+repository = "https://github.com/rsiemens/slippers"
 
 
 [tool.poetry.dependencies]

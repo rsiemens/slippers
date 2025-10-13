@@ -1,10 +1,12 @@
+import signal
 import socket
+import tempfile
 import unittest
 from selectors import EVENT_READ, EVENT_WRITE, BaseSelector, DefaultSelector
 from typing import cast
 from unittest.mock import ANY, MagicMock, patch
 
-from slippers import BaseSession, ClientSession, ProxySession, ServerSession
+from slippers import BaseSession, ClientSession, ProxySession, ServerSession, close
 
 METH_SELECT_REQ = b"\x05\x01\x00"
 METH_SELECT_RES = b"\x05\x00"
@@ -283,3 +285,44 @@ class ProxySessionTestCase(BaseTestCase):
         self.session.stage_auth()
         self.assertTrue(self.session.closed)
         cast(MagicMock, self.session.downstream.close).called_once_with(shutdown=True)
+
+
+class UtilityTestCase(BaseTestCase):
+    @patch("slippers.sys.exit")
+    def test_close(self, mock_exit) -> None:
+        selector = DefaultSelector()
+
+        # just need a file descriptor w/ a fileno
+        with tempfile.TemporaryFile() as conn1, tempfile.TemporaryFile() as conn2:
+            server_session = ServerSession(
+                conn=conn1,  # type: ignore
+                addr=("127.0.0.1", 1080),
+                selector=self.mock_selector,
+                proxy="socks5://foo:bar@my-socks-server.net:1080",
+            )
+
+            client_session = ClientSession(
+                conn=conn2,  # type: ignore
+                addr=("127.0.0.1", 4321),
+                selector=self.mock_selector,
+                proxy="socks5://foo:bar@my-socks-server.net:1080",
+            )
+
+            selector.register(
+                server_session.conn,
+                EVENT_READ,
+                server_session,
+            )
+            selector.register(
+                client_session.conn, EVENT_READ | EVENT_WRITE, client_session
+            )
+
+            with self.assertLogs("slippers", level="WARNING") as log_ctx:
+                close(selector, server_session, signal.SIGTERM, MagicMock())
+
+            self.assertEqual(len(log_ctx.records), 2)
+            self.assertIn("Leaking", log_ctx.records[0].msg)
+            self.assertIsNone(selector.get_map())
+            self.assertTrue(server_session.closed)
+            self.assertTrue(client_session.closed)
+            mock_exit.assert_called_once()

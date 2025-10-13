@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 __all__ = ("proxy",)
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +301,14 @@ def close(
     logger.info("Shutting down")
     server_session.close()
 
+    to_close = []
     if len(selector.get_map()):
         for obj, key in selector.get_map().items():
             logger.warning(f"Leaking {obj} {key.data}")
-            key.data.close()
+            to_close.append(key.data)
+
+    for session in to_close:
+        session.close()
 
     selector.close()
     sys.exit()
