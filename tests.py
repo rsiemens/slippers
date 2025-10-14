@@ -1,6 +1,5 @@
 import signal
 import socket
-import tempfile
 import unittest
 from selectors import EVENT_READ, EVENT_WRITE, BaseSelector, DefaultSelector
 from typing import cast
@@ -152,7 +151,7 @@ class ClientSessionTestCase(BaseTestCase):
 
         self.session.connect_proxy()
         mock_conn.connect.assert_called_once_with(("my-socks-server.net", 1080))
-        self.mock_selector.register.called_once_with(
+        self.mock_selector.register.assert_called_once_with(
             mock_conn, EVENT_READ | EVENT_WRITE, ANY
         )
         proxy_session = self.mock_selector.register.call_args.args[2]
@@ -262,41 +261,40 @@ class ProxySessionTestCase(BaseTestCase):
 
 
 class UtilityTestCase(BaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.conns = socket.socketpair()
+        for conn in self.conns:
+            self.addCleanup(conn.close)
+
     @patch("slippers.sys.exit")
     def test_close(self, mock_exit) -> None:
         selector = DefaultSelector()
 
-        # just need a file descriptor w/ a fileno
-        with tempfile.TemporaryFile() as conn1, tempfile.TemporaryFile() as conn2:
-            conn1.shutdown = lambda flag: None  # type: ignore
-            conn2.shutdown = lambda flag: None  # type: ignore
+        server_session = ServerSession(
+            conn=self.conns[0],
+            addr=("127.0.0.1", 1080),
+            selector=self.mock_selector,
+            proxy="socks5://foo:bar@my-socks-server.net:1080",
+        )
 
-            server_session = ServerSession(
-                conn=conn1,  # type: ignore
-                addr=("127.0.0.1", 1080),
-                selector=self.mock_selector,
-                proxy="socks5://foo:bar@my-socks-server.net:1080",
-            )
+        client_session = ClientSession(
+            conn=self.conns[1],
+            addr=("127.0.0.1", 4321),
+            selector=self.mock_selector,
+            proxy="socks5://foo:bar@my-socks-server.net:1080",
+        )
 
-            client_session = ClientSession(
-                conn=conn2,  # type: ignore
-                addr=("127.0.0.1", 4321),
-                selector=self.mock_selector,
-                proxy="socks5://foo:bar@my-socks-server.net:1080",
-            )
+        selector.register(
+            server_session.conn,
+            EVENT_READ,
+            server_session,
+        )
+        selector.register(client_session.conn, EVENT_READ | EVENT_WRITE, client_session)
 
-            selector.register(
-                server_session.conn,
-                EVENT_READ,
-                server_session,
-            )
-            selector.register(
-                client_session.conn, EVENT_READ | EVENT_WRITE, client_session
-            )
+        close(selector, server_session, signal.SIGTERM, MagicMock())
 
-            close(selector, server_session, signal.SIGTERM, MagicMock())
-
-            self.assertIsNone(selector.get_map())
-            self.assertTrue(server_session.closed)
-            self.assertTrue(client_session.closed)
-            mock_exit.assert_called_once()
+        self.assertIsNone(selector.get_map())
+        self.assertTrue(server_session.closed)
+        self.assertTrue(client_session.closed)
+        mock_exit.assert_called_once()
