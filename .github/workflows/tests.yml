@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  ci:
+    name: "Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        poetry-version: ["1.8.3"]
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: abatilo/actions-poetry@v3
+        with:
+          poetry-version: ${{ matrix.poetry-version }}
+      - name: Install
+        run: poetry install
+      - name: Lint
+        run: |
+          poetry run ruff format --diff slippers.py tests.py
+          poetry run ruff check --diff slippers.py tests.py
+      - name: Types 
+        run: poetry run mypy slippers.py tests.py
+      - name: Tests
+        run: poetry run python -m unittest tests.py
