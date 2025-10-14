@@ -24,11 +24,9 @@ US
 
 ```
 python -m slippers "socks5://username:password@my-socks-server.net:1080"
-16:01:32 [INFO] Listening on localhost:1080
-16:01:34 [INFO] 127.0.0.1:52766 connected
-16:01:34 [INFO] my-socks-server.net:1080 connected
-16:01:35 [INFO] Tunnel from 127.0.0.1:52766 to my-socks-server.net:1080 established
-16:01:35 [INFO] 127.0.0.1:52766 disconnected
+16:04:07 [INFO] Listening on localhost:1080 (4)
+16:04:09 [INFO] Tunnel from 127.0.0.1:64633 (7) to my-socks-server.net:1080 (8) established
+16:04:10 [INFO] Tunnel from 127.0.0.1:64633 (7) to my-socks-server.net:1080 (8) closed
 ```
 
 

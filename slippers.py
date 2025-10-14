@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 __all__ = ("proxy",)
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class BaseSession:
             return
 
         try:
-            data = self.conn.recv(1024)
+            data = self.conn.recv(4096)
         except (OSError, ConnectionError) as e:
             logger.error(
                 f"{e} occurred while receiving data from {self.addr} ({self.fd})"
