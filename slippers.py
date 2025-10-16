@@ -110,7 +110,7 @@ class BaseSession:
         closed_log = []
         while to_close is not None:
             if not to_close.closed:
-                self.selector.unregister(to_close.conn)
+                to_close.selector.unregister(to_close.conn)
 
                 try:
                     to_close.conn.shutdown(socket.SHUT_RDWR)

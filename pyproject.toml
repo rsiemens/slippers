@@ -9,8 +9,10 @@ packages = [
     { include = "slippers.py" },
 ]
 
-[projects.urls]
-repository = "https://github.com/rsiemens/slippers"
+
+[tools.poetry.urls]
+homepage = "https://github.com/rsiemens/slippers"
+github = "https://github.com/rsiemens/slippers"
 
 
 [tool.poetry.dependencies]
@@ -22,9 +24,11 @@ mypy = "^1.18.2"
 ruff = "^0.14.0"
 pudb = "^2025.1.1"
 
+
 [tool.ruff.lint]
 select = ["PL", "I"]
 ignore = ["PLR0913"]
+
 
 [build-system]
 requires = ["poetry-core"]

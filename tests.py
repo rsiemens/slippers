@@ -236,7 +236,7 @@ class ProxySessionTestCase(BaseTestCase):
 
         # flushes out anything in the out_buff then closes
         self.session.write()
-        self.mock_conn.send.asssert_called_once_with(b"hello world")
+        self.mock_conn.send.assert_called_once_with(b"hello world")
         self.assertEqual(self.session.out_buff, b"")
         self.assertTrue(self.session.closed)
 
