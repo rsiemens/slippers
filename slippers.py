@@ -13,11 +13,11 @@ from selectors import (
     BaseSelector,
     DefaultSelector,
 )
-from typing import Any, Callable
+from typing import Any, Callable, Self
 from urllib.parse import urlparse
 
 __all__ = ("proxy",)
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +342,6 @@ class Proxy:
         self.host = host
         self.port = port
         self.proc: multiprocessing.Process | None = None
-        self.uri = f"socks5://{host}:{port}"
 
     def start(self) -> None:
         self.proc = multiprocessing.Process(
@@ -355,9 +354,14 @@ class Proxy:
             self.proc.terminate()
             self.proc.join()
 
-    def __enter__(self) -> str:
+    def url(self, dns: bool = False) -> str:
+        if dns:
+            return f"socks5h://{self.host}:{self.port}"
+        return f"socks5://{self.host}:{self.port}"
+
+    def __enter__(self) -> Self:
         self.start()
-        return self.uri
+        return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.stop()

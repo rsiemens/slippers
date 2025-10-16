@@ -1,11 +1,19 @@
 import signal
 import socket
 import unittest
+from multiprocessing import Process
 from selectors import EVENT_READ, EVENT_WRITE, BaseSelector, DefaultSelector
 from typing import cast
 from unittest.mock import ANY, MagicMock, patch
 
-from slippers import BaseSession, ClientSession, ProxySession, ServerSession, close
+from slippers import (
+    BaseSession,
+    ClientSession,
+    Proxy,
+    ProxySession,
+    ServerSession,
+    close,
+)
 
 METH_SELECT_REQ = b"\x05\x01\x00"
 METH_SELECT_RES = b"\x05\x00"
@@ -145,7 +153,7 @@ class ClientSessionTestCase(BaseTestCase):
         )
 
     @patch("slippers.socket.socket")
-    def test_connect_proxy(self, mock_socket):
+    def test_connect_proxy(self, mock_socket: MagicMock):
         mock_conn = MagicMock()
         mock_socket.return_value = mock_conn
 
@@ -212,6 +220,7 @@ class ProxySessionTestCase(BaseTestCase):
         downstream = MagicMock(
             spec=ClientSession,
             addr=("127.0.0.1", 4321),
+            selector=self.mock_selector,
             conn=MagicMock(),
             fd=10,
             closed=False,
@@ -268,7 +277,7 @@ class UtilityTestCase(BaseTestCase):
             self.addCleanup(conn.close)
 
     @patch("slippers.sys.exit")
-    def test_close(self, mock_exit) -> None:
+    def test_close(self, mock_exit: MagicMock) -> None:
         selector = DefaultSelector()
 
         server_session = ServerSession(
@@ -298,3 +307,41 @@ class UtilityTestCase(BaseTestCase):
         self.assertTrue(server_session.closed)
         self.assertTrue(client_session.closed)
         mock_exit.assert_called_once()
+
+
+@patch("slippers.multiprocessing")
+class ProxyTestCase(unittest.TestCase):
+    def test_start_stop(self, mock_mp: MagicMock) -> None:
+        mock_process = MagicMock(spec=Process)
+        mock_process.is_alive.return_value = True
+        mock_mp.Process.return_value = mock_process
+        proxy = Proxy("socks5://foo:bar@upstream.net:1080")
+
+        self.assertIsNone(proxy.proc)
+        proxy.start()
+        self.assertIsNotNone(proxy.proc)
+        mock_process.start.assert_called_once()
+
+        proxy.stop()
+        mock_process.terminate.assert_called_once()
+        mock_process.join.assert_called_once()
+
+    def test_context_manager(self, mock_mp: MagicMock):
+        mock_process = MagicMock(spec=Process)
+        mock_process.is_alive.return_value = True
+        mock_mp.Process.return_value = mock_process
+        proxy = Proxy("socks5://foo:bar@upstream.net:1080")
+
+        self.assertIsNone(proxy.proc)
+        with proxy as pxy:
+            self.assertIs(proxy, pxy)
+            self.assertIsNotNone(proxy.proc)
+            mock_process.start.assert_called_once()
+        mock_process.terminate.assert_called_once()
+        mock_process.join.assert_called_once()
+
+    def test_url(self, _) -> None:
+        proxy = Proxy("socks5://foo:bar@upstream.net:1080", host="127.0.0.1", port=9876)
+
+        self.assertEqual(proxy.url(), "socks5://127.0.0.1:9876")
+        self.assertEqual(proxy.url(dns=True), "socks5h://127.0.0.1:9876")

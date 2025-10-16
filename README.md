@@ -18,7 +18,7 @@ By default, slippers listens on localhost:1080
 You can now use your local unauthenticated SOCKS5 endpoint
 
 ```
-curl --socks5-hostname "socks5://127.0.0.1:1080" https://ifconfig.io/country_code
+curl --proxy "socks5://127.0.0.1:1080" https://ifconfig.io/country_code
 US
 ```
 
@@ -47,11 +47,11 @@ def main():
         sync_playwright() as p,
         slippers.Proxy(
             f"socks5://{username}:{password}@my-socks-server.net:1080"
-        ) as socks_host,
+        ) as proxy,
     ):
         browser = p.chromium.launch(
             headless=True,
-            proxy={"server": socks_host},  # point to slippers local server
+            proxy={"server": proxy.url()},  # point to slippers local server
         )
         page = browser.new_page()
         page.goto("https://ifconfig.io/country_code", wait_until="domcontentloaded")
@@ -69,18 +69,22 @@ if __name__ == "__main__":
 
 Create a handler for a local, unauthenticated SOCKS5 server which forwards traffic to an upstream authenticated SOCKS5 proxy.
 
-&nbsp;&nbsp;**`start() -> None`**
+&nbsp;&nbsp;&nbsp;&nbsp;**`start() -> None`**
 
-&nbsp;&nbsp;Start the local proxy in a background process. Once started it can start accepting connections.
+&nbsp;&nbsp;&nbsp;&nbsp;Start the local proxy in a background process. Once started it can start accepting connections.
 
-&nbsp;&nbsp;**`stop() -> None`**
+&nbsp;&nbsp;&nbsp;&nbsp;**`stop() -> None`**
 
-&nbsp;&nbsp;Stop the background proxy process (if running).
+&nbsp;&nbsp;&nbsp;&nbsp;Stop the background proxy process (if running).
 
-&nbsp;&nbsp;**`__enter__() -> str`**
+&nbsp;&nbsp;&nbsp;&nbsp;**`url(dns: bool = False) -> str`**
 
-&nbsp;&nbsp;Start the proxy and return the local SOCSK5 uri.
+&nbsp;&nbsp;&nbsp;&nbsp;Return the SOCKS5 URL string. If `dns` is `True` then the scheme will be `socks5h` which some clients (like `curl`) use to defer DNS resolution to the SOCKS5 server.
 
-&nbsp;&nbsp;**`__exit__(exc_type, exc_value, traceback) -> None`**
+&nbsp;&nbsp;&nbsp;&nbsp;**`__enter__() -> Self`**
 
-&nbsp;&nbsp;Stop the proxy when exiting the `with` block.
+&nbsp;&nbsp;&nbsp;&nbsp;Start the proxy and return the `Proxy` object.
+
+&nbsp;&nbsp;&nbsp;&nbsp;**`__exit__(exc_type, exc_value, traceback) -> None`**
+
+&nbsp;&nbsp;&nbsp;&nbsp;Stop the proxy when exiting the `with` block.
